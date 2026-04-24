@@ -278,7 +278,8 @@ class SetupView(discord.ui.View):
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
 class ProductModal(discord.ui.Modal, title="Add New Product"):
-    name = discord.ui.TextInput(label="Product Name", placeholder="e.g. Pro Plan", min_length=1, max_length=50)
+    category = discord.ui.TextInput(label="Category/Main Product", placeholder="e.g. Nitro", min_length=1, max_length=50)
+    name = discord.ui.TextInput(label="Variant Name", placeholder="e.g. 1 Month", min_length=1, max_length=50)
     price = discord.ui.TextInput(label="Price", placeholder="e.g. 10.00", min_length=1)
     action_type = discord.ui.TextInput(label="Action Type (text or redirect)", placeholder="Type 'text' or 'redirect'", min_length=4, max_length=8)
     action_value = discord.ui.TextInput(label="Value", placeholder="The message text or the URL link", style=discord.TextStyle.paragraph)
@@ -291,8 +292,8 @@ class ProductModal(discord.ui.Modal, title="Add New Product"):
             if a_type not in ['text', 'redirect']:
                 return await interaction.response.send_message("❌ Action type must be 'text' or 'redirect'!", ephemeral=True)
 
-            await database.add_product(interaction.guild_id, self.name.value, price_val, a_type, self.action_value.value)
-            await interaction.response.send_message(f"✅ Product '{self.name.value}' added successfully!", ephemeral=True)
+            await database.add_product(interaction.guild_id, self.category.value, self.name.value, price_val, a_type, self.action_value.value)
+            await interaction.response.send_message(f"✅ Product '{self.name.value}' added to category '{self.category.value}' successfully!", ephemeral=True)
             await refresh_panel(interaction.guild)
         except ValueError:
             await interaction.response.send_message("❌ Invalid price! Please enter a number.", ephemeral=True)
@@ -303,7 +304,7 @@ class ProductDeleteView(discord.ui.View):
     def __init__(self, products):
         super().__init__(timeout=600)
         options = [
-            discord.SelectOption(label=f"{p[2]} - ${p[3]}", value=str(p[0]))
+            discord.SelectOption(label=f"[{p[2]}] {p[3]} - ${p[4]}", value=str(p[0]))
             for p in products
         ]
         self.add_item(ProductDeleteSelect(options))
@@ -321,39 +322,66 @@ class ProductDeleteSelect(discord.ui.Select):
 class ProductSelectionView(discord.ui.View):
     def __init__(self, products):
         super().__init__(timeout=None)
-        self.products = products
-        options = [
-            discord.SelectOption(label=f"{p[2]} - ${p[3]}", value=str(p[0]), description=p[5] if p[4] == 'text' else "Redirect link")
-            for p in products
-        ]
-        self.add_item(ProductSelect(options))
+        self.all_products = products
+        self.categories = sorted(list(set(p[2] for p in products)))
+        
+        options = [discord.SelectOption(label=cat, value=cat) for cat in self.categories]
+        self.add_item(CategorySelect(options, self.all_products))
 
-class ProductSelect(discord.ui.Select):
-    def __init__(self, options):
-        super().__init__(placeholder="Select products to purchase...", min_values=1, max_values=len(options), options=options)
+class CategorySelect(discord.ui.Select):
+    def __init__(self, options, all_products):
+        super().__init__(placeholder="Select a product category...", options=options)
+        self.all_products = all_products
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_cat = self.values[0]
+        variants = [p for p in self.all_products if p[2] == selected_cat]
+        
+        # Update the view to show variants
+        new_view = discord.ui.View(timeout=None)
+        variant_options = [
+            discord.SelectOption(label=f"{v[3]} - ${v[4]}", value=str(v[0]), description=v[6] if v[5] == 'text' else "Redirect link")
+            for v in variants
+        ]
+        new_view.add_item(VariantSelect(variant_options, self.all_products))
+        
+        embed = discord.Embed(title=f"Category: {selected_cat}", description="Now select the variant(s) you want to purchase:", color=discord.Color.blue())
+        await interaction.response.edit_message(embed=embed, view=new_view)
+
+class VariantSelect(discord.ui.Select):
+    def __init__(self, options, all_products):
+        # Allow multiple selection as before
+        super().__init__(placeholder="Select variants to purchase...", min_values=1, max_values=len(options), options=options)
+        self.all_products = all_products
 
     async def callback(self, interaction: discord.Interaction):
         selected_ids = [int(v) for v in self.values]
-        all_products = await database.get_products(interaction.guild_id)
-        selected_products = [p for p in all_products if p[0] in selected_ids]
+        selected_products = [p for p in self.all_products if p[0] in selected_ids]
         
-        total_price = sum(p[3] for p in selected_products)
+        total_price = sum(p[4] for p in selected_products)
         
         embed = discord.Embed(title="Order Summary", color=discord.Color.green())
         description = ""
         view = discord.ui.View()
         for p in selected_products:
-            description += f"**{p[2]}**: ${p[3]}"
-            if p[4] == 'text':
-                description += f"\n> *Info: {p[5]}*\n"
+            description += f"**{p[3]}**: ${p[4]}"
+            if p[5] == 'text':
+                description += f"\n> *Info: {p[6]}*\n"
             else:
                 description += "\n"
-                view.add_item(discord.ui.Button(label=f"Link: {p[2]}", url=p[5]))
+                view.add_item(discord.ui.Button(label=f"Link: {p[3]}", url=p[6]))
         
         description += f"\n**Total Order Amount: ${total_price:.2f}**"
         embed.description = description
         
-        await interaction.response.send_message(embed=embed, view=view if len(view.children) > 0 else None, ephemeral=True)
+        # Add a back button to return to category selection
+        back_btn = discord.ui.Button(label="Back to Categories", style=discord.ButtonStyle.secondary)
+        async def back_callback(back_inter: discord.Interaction):
+            await back_inter.response.edit_message(embed=discord.Embed(title="Payment & Products", description="Select the products you wish to purchase below.", color=discord.Color.gold()), view=ProductSelectionView(self.all_products))
+        back_btn.callback = back_callback
+        view.add_item(back_btn)
+        
+        await interaction.response.edit_message(embed=embed, view=view)
 
 async def create_ticket(interaction: discord.Interaction, ticket_type: str):
     guild_id = interaction.guild_id

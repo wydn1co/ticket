@@ -24,13 +24,29 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER,
+                category TEXT,
                 name TEXT,
                 price REAL,
-                action_type TEXT, -- 'text' or 'redirect'
+                action_type TEXT,
                 action_value TEXT
             )
         """)
         
+        # Ensure category column exists in products table (migration)
+        try:
+            await db.execute("ALTER TABLE products ADD COLUMN category TEXT")
+            await db.commit()
+        except aiosqlite.OperationalError:
+            # Column already exists
+            pass
+            
+        # Ensure panel_message_id column exists in settings table (migration)
+        try:
+            await db.execute("ALTER TABLE settings ADD COLUMN panel_message_id INTEGER")
+            await db.commit()
+        except aiosqlite.OperationalError:
+            pass
+            
         await db.commit()
 
 async def get_settings(guild_id: int):
@@ -55,11 +71,11 @@ async def update_settings(guild_id: int, **kwargs):
         
         await db.commit()
 
-async def add_product(guild_id: int, name: str, price: float, action_type: str, action_value: str):
+async def add_product(guild_id: int, category: str, name: str, price: float, action_type: str, action_value: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO products (guild_id, name, price, action_type, action_value) VALUES (?, ?, ?, ?, ?)",
-            (guild_id, name, price, action_type, action_value)
+            "INSERT INTO products (guild_id, category, name, price, action_type, action_value) VALUES (?, ?, ?, ?, ?, ?)",
+            (guild_id, category, name, price, action_type, action_value)
         )
         await db.commit()
 
