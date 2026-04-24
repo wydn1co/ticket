@@ -18,6 +18,7 @@ class TicketBot(commands.Bot):
     async def setup_hook(self):
         await database.init_db()
         self.add_view(TicketPanelView())
+        self.add_view(ReviewPanelView())
         try:
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} commands globally.")
@@ -43,6 +44,92 @@ class TicketPanelView(discord.ui.View):
     @discord.ui.button(label="Support ❓", style=discord.ButtonStyle.blurple, custom_id="persistent:support")
     async def support(self, interaction: discord.Interaction, button: discord.ui.Button):
         await create_ticket(interaction, "support")
+
+class ReviewPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Post Review ⭐", style=discord.ButtonStyle.danger, custom_id="persistent:post_review")
+    async def post_review(self, interaction: discord.Interaction, button: discord.ui.Button):
+        settings = await database.get_settings(interaction.guild_id)
+        if not settings or not settings[6]: # review_role_id
+            return await interaction.response.send_message("Review system not fully set up!", ephemeral=True)
+        
+        review_role = interaction.guild.get_role(settings[6])
+        if review_role not in interaction.user.roles:
+            return await interaction.response.send_message(f"Only users with the {review_role.mention} role can post reviews!", ephemeral=True)
+            
+        await interaction.response.send_modal(ReviewModal())
+
+class ReviewModal(discord.ui.Modal, title="Submit Your Review"):
+    rating = discord.ui.TextInput(label="Rating (1-5)", placeholder="Enter 1, 2, 3, 4, or 5", min_length=1, max_length=1)
+    feedback = discord.ui.TextInput(label="Feedback", placeholder="Tell us what you think...", style=discord.TextStyle.paragraph, min_length=10)
+    image_url = discord.ui.TextInput(label="Image URL (Optional)", placeholder="Paste a link to an image...", required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rating_val = int(self.rating.value)
+            if not 1 <= rating_val <= 5:
+                raise ValueError()
+        except ValueError:
+            return await interaction.response.send_message("❌ Rating must be a number between 1 and 5!", ephemeral=True)
+
+        settings = await database.get_settings(interaction.guild_id)
+        channel_id = settings[5] # review_channel_id
+        channel = interaction.guild.get_channel(channel_id)
+        
+        if not channel:
+            return await interaction.response.send_message("❌ Review channel not found!", ephemeral=True)
+
+        stars = "⭐" * rating_val
+        embed = discord.Embed(title="New Review!", color=discord.Color.red())
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        embed.add_field(name="Rating", value=stars, inline=False)
+        embed.add_field(name="Feedback", value=self.feedback.value, inline=False)
+        
+        if self.image_url.value:
+            embed.set_image(url=self.image_url.value)
+            
+        embed.set_footer(text=f"User ID: {interaction.user.id}")
+        
+        await channel.send(embed=embed, view=ReviewPanelView())
+        await interaction.response.send_message("✅ Thank you for your review!", ephemeral=True)
+
+class ReviewSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.review_channel = None
+        self.review_role = None
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Review Post Channel", channel_types=[discord.ChannelType.text])
+    async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        self.review_channel = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Select Reviewer Role")
+    async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        self.review_role = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Confirm Review Setup", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.review_channel or not self.review_role:
+            return await interaction.response.send_message("Please select both a channel and a role!", ephemeral=True)
+
+        await database.update_settings(
+            interaction.guild_id,
+            review_channel_id=self.review_channel.id,
+            review_role_id=self.review_role.id
+        )
+
+        embed = discord.Embed(
+            title="Customer Reviews",
+            description="Have you purchased from us? Click the button below to leave a review!",
+            color=discord.Color.red()
+        )
+        await self.review_channel.send(embed=embed, view=ReviewPanelView())
+        await interaction.response.send_message(f"✅ Review system set up in {self.review_channel.mention}!", ephemeral=True)
+        self.stop()
 
 class SetupView(discord.ui.View):
     def __init__(self):
@@ -272,6 +359,12 @@ async def help_prefix(ctx):
         inline=False
     )
     
+    embed.add_field(
+        name="Review Setup",
+        value="`.review_setup` - Interactive setup for the review system.",
+        inline=False
+    )
+    
     await ctx.send(embed=embed)
 
 @bot.command(name="setup")
@@ -350,6 +443,30 @@ async def sync_slash(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
     await bot.tree.sync()
     await interaction.response.send_message("✅ Slash commands synced!", ephemeral=True)
+
+@bot.tree.command(name="review_setup", description="Setup the review system via an interactive form")
+async def review_setup_slash(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
+    
+    embed = discord.Embed(
+        title="Review System Setup",
+        description="Select the channel where reviews will be posted and the role allowed to post them.",
+        color=discord.Color.red()
+    )
+    await interaction.response.send_message(embed=embed, view=ReviewSetupView(), ephemeral=True)
+
+@bot.command(name="review_setup")
+async def review_setup_prefix(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    
+    embed = discord.Embed(
+        title="Review System Setup",
+        description="Select the channel where reviews will be posted and the role allowed to post them.",
+        color=discord.Color.red()
+    )
+    await ctx.send(embed=embed, view=ReviewSetupView())
 
 @bot.command(name="sync")
 async def sync_prefix(ctx):

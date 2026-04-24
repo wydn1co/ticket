@@ -12,7 +12,9 @@ async def init_db():
                 panel_channel_id INTEGER,
                 purchase_category_id INTEGER,
                 support_category_id INTEGER,
-                staff_role_id INTEGER
+                staff_role_id INTEGER,
+                review_channel_id INTEGER,
+                review_role_id INTEGER
             )
         """)
         
