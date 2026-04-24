@@ -13,13 +13,20 @@ class TicketBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix=".", intents=intents, help_command=None)
 
     async def setup_hook(self):
         await database.init_db()
-        # Add persistent views here later
         self.add_view(TicketPanelView())
+        try:
+            synced = await self.tree.sync()
+            print(f"Synced {len(synced)} commands globally.")
+        except Exception as e:
+            print(f"Failed to sync commands: {e}")
         print(f"Logged in as {self.user}")
+
+    async def on_ready(self):
+        print(f"Bot is ready. Prefix: {self.command_prefix}")
 
 bot = TicketBot()
 
@@ -120,8 +127,97 @@ async def create_ticket(interaction: discord.Interaction, ticket_type: str):
     else:
         await channel.send(welcome_msg)
 
-# --- Commands ---
+# --- Prefix Commands ---
 
+@bot.command(name="help")
+async def help_prefix(ctx):
+    embed = discord.Embed(
+        title="Ticket Bot Help",
+        description="Here are the available commands. You can use either `.` prefix or `/` slash commands.",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="Configuration",
+        value=(
+            "`.setup #channel #purchase_cat #support_cat @staff_role`\n"
+            "Sets up the ticket system categories and staff role."
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Products",
+        value=(
+            "`.buttons \"Name\" Price text/redirect \"Value\"`\n"
+            "Adds a product. Example:\n"
+            "`.buttons \"Pro Plan\" 10.0 text \"Access granted\"`"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Panel",
+        value="`.panel` - Sends the ticket creation panel.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="Sync",
+        value="`.sync` - Syncs slash commands if they aren't showing up.",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name="setup")
+async def setup_prefix(ctx, panel_channel: discord.TextChannel, purchase_category: discord.CategoryChannel, support_category: discord.CategoryChannel, staff_role: discord.Role):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    
+    await database.update_settings(
+        ctx.guild.id,
+        panel_channel_id=panel_channel.id,
+        purchase_category_id=purchase_category.id,
+        support_category_id=support_category.id,
+        staff_role_id=staff_role.id
+    )
+    await ctx.send("✅ Settings updated successfully!")
+
+@bot.command(name="panel")
+async def panel_prefix(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    
+    settings = await database.get_settings(ctx.guild.id)
+    if not settings or not settings[1]:
+        return await ctx.send("❌ Panel channel not configured! Use `.setup` first.")
+    
+    channel = ctx.guild.get_channel(settings[1])
+    if not channel:
+        return await ctx.send("❌ Configured panel channel not found!")
+    
+    embed = discord.Embed(
+        title="Open a Ticket",
+        description="Click the buttons below to open a ticket for Purchase or Support.",
+        color=discord.Color.blue()
+    )
+    
+    await channel.send(embed=embed, view=TicketPanelView())
+    await ctx.send("✅ Panel sent!")
+
+@bot.command(name="buttons")
+async def buttons_prefix(ctx, name: str, price: float, action_type: str, action_value: str):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    
+    if action_type.lower() not in ['text', 'redirect']:
+        return await ctx.send("❌ Action type must be either `text` or `redirect`.")
+    
+    await database.add_product(ctx.guild.id, name, price, action_type.lower(), action_value)
+    await ctx.send(f"✅ Product '{name}' added successfully!")
+
+# --- Slash Commands ---
 @bot.tree.command(name="setup", description="Configure the ticket bot settings")
 @app_commands.describe(
     panel_channel="Channel where the ticket panel will be sent",
@@ -176,6 +272,17 @@ async def buttons(interaction: discord.Interaction, name: str, price: float, act
     
     await database.add_product(interaction.guild_id, name, price, action_type, action_value)
     await interaction.response.send_message(f"Product '{name}' added successfully!", ephemeral=True)
+
+@bot.command(name="sync")
+async def sync_prefix(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    
+    try:
+        synced = await bot.tree.sync()
+        await ctx.send(f"Synced {len(synced)} slash commands globally!")
+    except Exception as e:
+        await ctx.send(f"Failed to sync: {e}")
 
 @bot.tree.command(name="sync", description="Sync slash commands")
 async def sync(interaction: discord.Interaction):
