@@ -8,6 +8,33 @@ import asyncio
 
 load_dotenv()
 
+async def refresh_panel(guild: discord.Guild):
+    settings = await database.get_settings(guild.id)
+    if not settings or not settings[1] or not settings[7]: # panel_channel_id and panel_message_id
+        return
+
+    channel = guild.get_channel(settings[1])
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(settings[7])
+        embed = discord.Embed(
+            title="Open a Ticket",
+            description="Click the buttons below to open a ticket for Purchase or Support.",
+            color=discord.Color.blue()
+        )
+        await message.edit(embed=embed, view=TicketPanelView())
+    except Exception:
+        # Message might have been deleted, send a new one
+        embed = discord.Embed(
+            title="Open a Ticket",
+            description="Click the buttons below to open a ticket for Purchase or Support.",
+            color=discord.Color.blue()
+        )
+        new_msg = await channel.send(embed=embed, view=TicketPanelView())
+        await database.update_settings(guild.id, panel_message_id=new_msg.id)
+
 class TicketBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -101,35 +128,57 @@ class ReviewSetupView(discord.ui.View):
         self.review_channel = None
         self.review_role = None
 
+    def update_embed(self):
+        embed = discord.Embed(
+            title="Review System Setup",
+            description="Select the channel where reviews will be posted and the role allowed to post them.",
+            color=discord.Color.red()
+        )
+        channel_text = f"<#{self.review_channel.id}>" if self.review_channel else "Not selected"
+        role_text = f"<@&{self.review_role.id}>" if self.review_role else "Not selected"
+        embed.add_field(name="Post Channel", value=channel_text, inline=True)
+        embed.add_field(name="Reviewer Role", value=role_text, inline=True)
+        return embed
+
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Review Post Channel", channel_types=[discord.ChannelType.text])
     async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
         self.review_channel = select.values[0]
-        await interaction.response.defer()
+        await interaction.response.edit_message(embed=self.update_embed(), view=self)
 
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Select Reviewer Role")
     async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
         self.review_role = select.values[0]
-        await interaction.response.defer()
+        await interaction.response.edit_message(embed=self.update_embed(), view=self)
 
     @discord.ui.button(label="Confirm Review Setup", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.review_channel or not self.review_role:
             return await interaction.response.send_message("Please select both a channel and a role!", ephemeral=True)
 
-        await database.update_settings(
-            interaction.guild_id,
-            review_channel_id=self.review_channel.id,
-            review_role_id=self.review_role.id
-        )
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            await database.update_settings(
+                interaction.guild_id,
+                review_channel_id=self.review_channel.id,
+                review_role_id=self.review_role.id
+            )
 
-        embed = discord.Embed(
-            title="Customer Reviews",
-            description="Have you purchased from us? Click the button below to leave a review!",
-            color=discord.Color.red()
-        )
-        await self.review_channel.send(embed=embed, view=ReviewPanelView())
-        await interaction.response.send_message(f"✅ Review system set up in {self.review_channel.mention}!", ephemeral=True)
-        self.stop()
+            # Get actual channel
+            actual_channel = interaction.guild.get_channel(self.review_channel.id)
+            if not actual_channel:
+                actual_channel = await interaction.guild.fetch_channel(self.review_channel.id)
+
+            embed = discord.Embed(
+                title="Customer Reviews",
+                description="Have you purchased from us? Click the button below to leave a review!",
+                color=discord.Color.red()
+            )
+            await actual_channel.send(embed=embed, view=ReviewPanelView())
+            await interaction.followup.send(f"✅ Review system set up in {actual_channel.mention}!", ephemeral=True)
+            self.stop()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 class SetupView(discord.ui.View):
     def __init__(self):
@@ -216,7 +265,12 @@ class SetupView(discord.ui.View):
                 description="Click the buttons below to open a ticket for Purchase or Support.",
                 color=discord.Color.blue()
             )
-            await actual_panel_channel.send(embed=embed, view=TicketPanelView())
+            panel_msg = await actual_panel_channel.send(embed=embed, view=TicketPanelView())
+
+            await database.update_settings(
+                interaction.guild_id,
+                panel_message_id=panel_msg.id
+            )
 
             await interaction.followup.send(f"✅ Setup complete! Panel sent to {actual_panel_channel.mention}", ephemeral=True)
             self.stop()
@@ -239,10 +293,30 @@ class ProductModal(discord.ui.Modal, title="Add New Product"):
 
             await database.add_product(interaction.guild_id, self.name.value, price_val, a_type, self.action_value.value)
             await interaction.response.send_message(f"✅ Product '{self.name.value}' added successfully!", ephemeral=True)
+            await refresh_panel(interaction.guild)
         except ValueError:
             await interaction.response.send_message("❌ Invalid price! Please enter a number.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+class ProductDeleteView(discord.ui.View):
+    def __init__(self, products):
+        super().__init__(timeout=600)
+        options = [
+            discord.SelectOption(label=f"{p[2]} - ${p[3]}", value=str(p[0]))
+            for p in products
+        ]
+        self.add_item(ProductDeleteSelect(options))
+
+class ProductDeleteSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="Select a product to delete...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        product_id = int(self.values[0])
+        await database.delete_product(product_id)
+        await interaction.response.send_message("✅ Product deleted successfully!", ephemeral=True)
+        await refresh_panel(interaction.guild)
 
 class ProductSelectionView(discord.ui.View):
     def __init__(self, products):
@@ -346,9 +420,8 @@ async def help_prefix(ctx):
     embed.add_field(
         name="Products",
         value=(
-            "`.buttons \"Name\" Price text/redirect \"Value\"`\n"
-            "Adds a product. Example:\n"
-            "`.buttons \"Pro Plan\" 10.0 text \"Access granted\"`"
+            "`.buttons` - Interactive form to add a product.\n"
+            "`.delete_product` - Interactive form to delete a product."
         ),
         inline=False
     )
@@ -395,6 +468,17 @@ async def buttons_prefix(ctx):
     
     await ctx.send("Click the button below to add a new product via form:", view=view)
 
+@bot.command(name="delete_product")
+async def delete_product_prefix(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    
+    products = await database.get_products(ctx.guild.id)
+    if not products:
+        return await ctx.send("❌ No products found to delete!")
+    
+    await ctx.send("Select a product to delete:", view=ProductDeleteView(products))
+
 # --- Slash Commands ---
 
 @bot.tree.command(name="setup", description="Configure the ticket bot settings via an interactive form")
@@ -414,6 +498,17 @@ async def buttons_slash(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
     await interaction.response.send_modal(ProductModal())
+
+@bot.tree.command(name="delete_product", description="Delete an existing product button")
+async def delete_product_slash(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
+    
+    products = await database.get_products(interaction.guild_id)
+    if not products:
+        return await interaction.response.send_message("❌ No products found to delete!", ephemeral=True)
+    
+    await interaction.response.send_message("Select a product to delete:", view=ProductDeleteView(products), ephemeral=True)
 
 @bot.command(name="panel")
 async def panel_prefix(ctx):
