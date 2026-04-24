@@ -136,6 +136,27 @@ class SetupView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
+class ProductModal(discord.ui.Modal, title="Add New Product"):
+    name = discord.ui.TextInput(label="Product Name", placeholder="e.g. Pro Plan", min_length=1, max_length=50)
+    price = discord.ui.TextInput(label="Price", placeholder="e.g. 10.00", min_length=1)
+    action_type = discord.ui.TextInput(label="Action Type (text or redirect)", placeholder="Type 'text' or 'redirect'", min_length=4, max_length=8)
+    action_value = discord.ui.TextInput(label="Value", placeholder="The message text or the URL link", style=discord.TextStyle.paragraph)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            price_val = float(self.price.value.replace('$', ''))
+            a_type = self.action_type.value.lower().strip()
+            
+            if a_type not in ['text', 'redirect']:
+                return await interaction.response.send_message("❌ Action type must be 'text' or 'redirect'!", ephemeral=True)
+
+            await database.add_product(interaction.guild_id, self.name.value, price_val, a_type, self.action_value.value)
+            await interaction.response.send_message(f"✅ Product '{self.name.value}' added successfully!", ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid price! Please enter a number.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
 class ProductSelectionView(discord.ui.View):
     def __init__(self, products):
         super().__init__(timeout=None)
@@ -266,15 +287,20 @@ async def setup_prefix(ctx):
     await ctx.send(embed=embed, view=SetupView())
 
 @bot.command(name="buttons")
-async def buttons_prefix(ctx, name: str, price: float, action_type: str, action_value: str):
+async def buttons_prefix(ctx):
     if not ctx.author.guild_permissions.administrator:
         return
     
-    if action_type.lower() not in ['text', 'redirect']:
-        return await ctx.send("❌ Action type must be either `text` or `redirect`.")
+    view = discord.ui.View()
+    add_btn = discord.ui.Button(label="Add Product", style=discord.ButtonStyle.green)
     
-    await database.add_product(ctx.guild.id, name, price, action_type.lower(), action_value)
-    await ctx.send(f"✅ Product '{name}' added successfully!")
+    async def add_callback(interaction: discord.Interaction):
+        await interaction.response.send_modal(ProductModal())
+        
+    add_btn.callback = add_callback
+    view.add_item(add_btn)
+    
+    await ctx.send("Click the button below to add a new product via form:", view=view)
 
 # --- Slash Commands ---
 
@@ -289,6 +315,12 @@ async def setup(interaction: discord.Interaction):
         color=discord.Color.blue()
     )
     await interaction.response.send_message(embed=embed, view=SetupView(), ephemeral=True)
+
+@bot.tree.command(name="buttons", description="Add a new product button via an interactive form")
+async def buttons_slash(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
+    await interaction.response.send_modal(ProductModal())
 
 @bot.command(name="panel")
 async def panel_prefix(ctx):
