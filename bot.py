@@ -44,6 +44,58 @@ class TicketPanelView(discord.ui.View):
     async def support(self, interaction: discord.Interaction, button: discord.ui.Button):
         await create_ticket(interaction, "support")
 
+class SetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.panel_channel = None
+        self.purchase_category = None
+        self.support_category = None
+        self.staff_role = None
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Panel Channel", channel_types=[discord.ChannelType.text])
+    async def select_panel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        self.panel_channel = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Purchase Category", channel_types=[discord.ChannelType.category])
+    async def select_purchase(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        self.purchase_category = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Support Category", channel_types=[discord.ChannelType.category])
+    async def select_support(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        self.support_category = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Select Staff Role")
+    async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        self.staff_role = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Confirm Setup", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not all([self.panel_channel, self.purchase_category, self.support_category, self.staff_role]):
+            return await interaction.response.send_message("Please complete all selections first!", ephemeral=True)
+
+        await database.update_settings(
+            interaction.guild_id,
+            panel_channel_id=self.panel_channel.id,
+            purchase_category_id=self.purchase_category.id,
+            support_category_id=self.support_category.id,
+            staff_role_id=self.staff_role.id
+        )
+
+        # Send panel
+        embed = discord.Embed(
+            title="Open a Ticket",
+            description="Click the buttons below to open a ticket for Purchase or Support.",
+            color=discord.Color.blue()
+        )
+        await self.panel_channel.send(embed=embed, view=TicketPanelView())
+
+        await interaction.response.send_message(f"✅ Setup complete! Panel sent to {self.panel_channel.mention}", ephemeral=True)
+        self.stop()
+
 class ProductSelectionView(discord.ui.View):
     def __init__(self, products):
         super().__init__(timeout=None)
@@ -138,11 +190,8 @@ async def help_prefix(ctx):
     )
     
     embed.add_field(
-        name="Configuration",
-        value=(
-            "`.setup #channel #purchase_cat #support_cat @staff_role`\n"
-            "Sets up the ticket system categories and staff role."
-        ),
+        name="Setup",
+        value="`.setup` - Opens an interactive form to configure categories, channels, and roles.",
         inline=False
     )
     
@@ -157,12 +206,6 @@ async def help_prefix(ctx):
     )
     
     embed.add_field(
-        name="Panel",
-        value="`.panel` - Sends the ticket creation panel.",
-        inline=False
-    )
-    
-    embed.add_field(
         name="Sync",
         value="`.sync` - Syncs slash commands if they aren't showing up.",
         inline=False
@@ -171,40 +214,16 @@ async def help_prefix(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="setup")
-async def setup_prefix(ctx, panel_channel: discord.TextChannel, purchase_category: discord.CategoryChannel, support_category: discord.CategoryChannel, staff_role: discord.Role):
+async def setup_prefix(ctx):
     if not ctx.author.guild_permissions.administrator:
         return
-    
-    await database.update_settings(
-        ctx.guild.id,
-        panel_channel_id=panel_channel.id,
-        purchase_category_id=purchase_category.id,
-        support_category_id=support_category.id,
-        staff_role_id=staff_role.id
-    )
-    await ctx.send("✅ Settings updated successfully!")
-
-@bot.command(name="panel")
-async def panel_prefix(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return
-    
-    settings = await database.get_settings(ctx.guild.id)
-    if not settings or not settings[1]:
-        return await ctx.send("❌ Panel channel not configured! Use `.setup` first.")
-    
-    channel = ctx.guild.get_channel(settings[1])
-    if not channel:
-        return await ctx.send("❌ Configured panel channel not found!")
     
     embed = discord.Embed(
-        title="Open a Ticket",
-        description="Click the buttons below to open a ticket for Purchase or Support.",
+        title="Ticket Bot Interactive Setup",
+        description="Please select the required channels and roles using the menus below.",
         color=discord.Color.blue()
     )
-    
-    await channel.send(embed=embed, view=TicketPanelView())
-    await ctx.send("✅ Panel sent!")
+    await ctx.send(embed=embed, view=SetupView())
 
 @bot.command(name="buttons")
 async def buttons_prefix(ctx, name: str, price: float, action_type: str, action_value: str):
@@ -218,26 +237,18 @@ async def buttons_prefix(ctx, name: str, price: float, action_type: str, action_
     await ctx.send(f"✅ Product '{name}' added successfully!")
 
 # --- Slash Commands ---
-@bot.tree.command(name="setup", description="Configure the ticket bot settings")
-@app_commands.describe(
-    panel_channel="Channel where the ticket panel will be sent",
-    purchase_category="Category for purchase tickets",
-    support_category="Category for support tickets",
-    staff_role="Role to ping for new tickets"
-)
-async def setup(interaction: discord.Interaction, panel_channel: discord.TextChannel, purchase_category: discord.CategoryChannel, support_category: discord.CategoryChannel, staff_role: discord.Role):
+
+@bot.tree.command(name="setup", description="Configure the ticket bot settings via an interactive form")
+async def setup(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("You need Administrator permissions to use this command.", ephemeral=True)
     
-    await database.update_settings(
-        interaction.guild_id,
-        panel_channel_id=panel_channel.id,
-        purchase_category_id=purchase_category.id,
-        support_category_id=support_category.id,
-        staff_role_id=staff_role.id
+    embed = discord.Embed(
+        title="Ticket Bot Interactive Setup",
+        description="Please select the required channels and roles using the menus below.",
+        color=discord.Color.blue()
     )
-    
-    await interaction.response.send_message("Settings updated successfully!", ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=SetupView(), ephemeral=True)
 
 @bot.tree.command(name="panel", description="Send the ticket panel in the configured channel")
 async def panel(interaction: discord.Interaction):
