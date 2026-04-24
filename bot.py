@@ -58,31 +58,49 @@ class SetupView(discord.ui.View):
             description="Please select the required channels and roles using the menus below.",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Panel Channel", value=self.panel_channel.mention if self.panel_channel else "Not selected", inline=True)
-        embed.add_field(name="Staff Role", value=self.staff_role.mention if self.staff_role else "Not selected", inline=True)
-        embed.add_field(name="Purchase Category", value=self.purchase_category.name if self.purchase_category else "Not selected", inline=False)
-        embed.add_field(name="Support Category", value=self.support_category.name if self.support_category else "Not selected", inline=False)
+        # AppCommandChannel doesn't always have .mention, use ID formatting instead
+        panel_text = f"<#{self.panel_channel.id}>" if self.panel_channel else "Not selected"
+        role_text = f"<@&{self.staff_role.id}>" if self.staff_role else "Not selected"
+        purchase_text = f"<#{self.purchase_category.id}>" if self.purchase_category else "Not selected"
+        support_text = f"<#{self.support_category.id}>" if self.support_category else "Not selected"
+
+        embed.add_field(name="Panel Channel", value=panel_text, inline=True)
+        embed.add_field(name="Staff Role", value=role_text, inline=True)
+        embed.add_field(name="Purchase Category", value=purchase_text, inline=False)
+        embed.add_field(name="Support Category", value=support_text, inline=False)
         return embed
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Panel Channel", channel_types=[discord.ChannelType.text])
     async def select_panel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        self.panel_channel = select.values[0]
-        await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        try:
+            self.panel_channel = select.values[0]
+            await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        except Exception as e:
+            print(f"Error in select_panel: {e}")
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Purchase Category", channel_types=[discord.ChannelType.category])
     async def select_purchase(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        self.purchase_category = select.values[0]
-        await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        try:
+            self.purchase_category = select.values[0]
+            await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        except Exception as e:
+            print(f"Error in select_purchase: {e}")
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Support Category", channel_types=[discord.ChannelType.category])
     async def select_support(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        self.support_category = select.values[0]
-        await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        try:
+            self.support_category = select.values[0]
+            await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        except Exception as e:
+            print(f"Error in select_support: {e}")
 
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Select Staff Role")
     async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        self.staff_role = select.values[0]
-        await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        try:
+            self.staff_role = select.values[0]
+            await interaction.response.edit_message(embed=self.update_embed(), view=self)
+        except Exception as e:
+            print(f"Error in select_role: {e}")
 
     @discord.ui.button(label="Confirm Setup", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -272,18 +290,18 @@ async def setup(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, view=SetupView(), ephemeral=True)
 
-@bot.tree.command(name="panel", description="Send the ticket panel in the configured channel")
-async def panel(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("You need Administrator permissions to use this command.", ephemeral=True)
+@bot.command(name="panel")
+async def panel_prefix(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return
     
-    settings = await database.get_settings(interaction.guild_id)
+    settings = await database.get_settings(ctx.guild.id)
     if not settings or not settings[1]:
-        return await interaction.response.send_message("Panel channel not configured! Use /setup first.", ephemeral=True)
+        return await ctx.send("❌ Panel channel not configured! Use `.setup` first.")
     
-    channel = interaction.guild.get_channel(settings[1])
+    channel = ctx.guild.get_channel(settings[1])
     if not channel:
-        return await interaction.response.send_message("Configured panel channel not found!", ephemeral=True)
+        return await ctx.send("❌ Configured panel channel not found!")
     
     embed = discord.Embed(
         title="Open a Ticket",
@@ -292,19 +310,14 @@ async def panel(interaction: discord.Interaction):
     )
     
     await channel.send(embed=embed, view=TicketPanelView())
-    await interaction.response.send_message("Panel sent!", ephemeral=True)
+    await ctx.send("✅ Panel sent!")
 
-@bot.tree.command(name="buttons", description="Manage product buttons")
-@app_commands.choices(action_type=[
-    app_commands.Choice(name="Text", value="text"),
-    app_commands.Choice(name="Redirect", value="redirect")
-])
-async def buttons(interaction: discord.Interaction, name: str, price: float, action_type: str, action_value: str):
+@bot.tree.command(name="sync", description="Sync slash commands globally")
+async def sync_slash(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("You need Administrator permissions to use this command.", ephemeral=True)
-    
-    await database.add_product(interaction.guild_id, name, price, action_type, action_value)
-    await interaction.response.send_message(f"Product '{name}' added successfully!", ephemeral=True)
+        return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
+    await bot.tree.sync()
+    await interaction.response.send_message("✅ Slash commands synced!", ephemeral=True)
 
 @bot.command(name="sync")
 async def sync_prefix(ctx):
@@ -313,17 +326,9 @@ async def sync_prefix(ctx):
     
     try:
         synced = await bot.tree.sync()
-        await ctx.send(f"Synced {len(synced)} slash commands globally!")
+        await ctx.send(f"✅ Synced {len(synced)} slash commands globally!")
     except Exception as e:
-        await ctx.send(f"Failed to sync: {e}")
-
-@bot.tree.command(name="sync", description="Sync slash commands")
-async def sync(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("You need Administrator permissions to use this command.", ephemeral=True)
-    
-    await bot.tree.sync()
-    await interaction.response.send_message("Slash commands synced!", ephemeral=True)
+        await ctx.send(f"❌ Failed to sync: {e}")
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
