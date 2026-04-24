@@ -277,28 +277,53 @@ class SetupView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
-class ProductModal(discord.ui.Modal, title="Add New Product"):
-    category = discord.ui.TextInput(label="Category/Main Product", placeholder="e.g. Nitro", min_length=1, max_length=50)
-    name = discord.ui.TextInput(label="Variant Name", placeholder="e.g. 1 Month", min_length=1, max_length=50)
-    price = discord.ui.TextInput(label="Price", placeholder="e.g. 10.00", min_length=1)
-    action_type = discord.ui.TextInput(label="Action Type (text or redirect)", placeholder="Type 'text' or 'redirect'", min_length=4, max_length=8)
-    action_value = discord.ui.TextInput(label="Value", placeholder="The message text or the URL link", style=discord.TextStyle.paragraph)
+class ProductModal(discord.ui.Modal, title="Add Product Variants"):
+    category = discord.ui.TextInput(label="Category Name", placeholder="e.g. Nitro", min_length=1, max_length=50)
+    weekly = discord.ui.TextInput(label="Weekly Price:Value", placeholder="e.g. 5.00:https://link.com (Leave empty to skip)", required=False)
+    monthly = discord.ui.TextInput(label="Monthly Price:Value", placeholder="e.g. 15.00:https://link.com (Leave empty to skip)", required=False)
+    lifetime = discord.ui.TextInput(label="Lifetime Price:Value", placeholder="e.g. 50.00:https://link.com (Leave empty to skip)", required=False)
+    action_type = discord.ui.TextInput(label="Action Type (text or redirect)", placeholder="Type 'text' or 'redirect'", min_length=4, max_length=8, default="redirect")
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            price_val = float(self.price.value.replace('$', ''))
             a_type = self.action_type.value.lower().strip()
-            
             if a_type not in ['text', 'redirect']:
                 return await interaction.response.send_message("❌ Action type must be 'text' or 'redirect'!", ephemeral=True)
 
-            await database.add_product(interaction.guild_id, self.category.value, self.name.value, price_val, a_type, self.action_value.value)
-            await interaction.response.send_message(f"✅ Product '{self.name.value}' added to category '{self.category.value}' successfully!", ephemeral=True)
-            await refresh_panel(interaction.guild)
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid price! Please enter a number.", ephemeral=True)
+            variants_added = []
+            
+            # Helper to process variant inputs
+            async def process_variant(label, input_val):
+                if not input_val:
+                    return
+                if ":" not in input_val:
+                    return await interaction.followup.send(f"❌ Invalid format for {label}! Use 'Price:Value'", ephemeral=True)
+                
+                price_str, value_str = input_val.split(":", 1)
+                try:
+                    price_val = float(price_str.replace('$', '').strip())
+                    await database.add_product(interaction.guild_id, self.category.value, label, price_val, a_type, value_str.strip())
+                    variants_added.append(label)
+                except ValueError:
+                    await interaction.followup.send(f"❌ Invalid price for {label}!", ephemeral=True)
+
+            await interaction.response.defer(ephemeral=True)
+            
+            await process_variant("Weekly", self.weekly.value)
+            await process_variant("Monthly", self.monthly.value)
+            await process_variant("Lifetime", self.lifetime.value)
+
+            if variants_added:
+                await interaction.followup.send(f"✅ Added {', '.join(variants_added)} variants to category '{self.category.value}'!", ephemeral=True)
+                await refresh_panel(interaction.guild)
+            else:
+                await interaction.followup.send("❌ No variants were added. Please fill in at least one price.", ephemeral=True)
+                
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 class ProductDeleteView(discord.ui.View):
     def __init__(self, products):
