@@ -92,6 +92,11 @@ class SetupView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         
         try:
+            # Get actual channel and category objects since select menus return partial objects
+            actual_panel_channel = interaction.guild.get_channel(self.panel_channel.id)
+            if not actual_panel_channel:
+                actual_panel_channel = await interaction.guild.fetch_channel(self.panel_channel.id)
+
             await database.update_settings(
                 interaction.guild_id,
                 panel_channel_id=self.panel_channel.id,
@@ -106,9 +111,9 @@ class SetupView(discord.ui.View):
                 description="Click the buttons below to open a ticket for Purchase or Support.",
                 color=discord.Color.blue()
             )
-            await self.panel_channel.send(embed=embed, view=TicketPanelView())
+            await actual_panel_channel.send(embed=embed, view=TicketPanelView())
 
-            await interaction.followup.send(f"✅ Setup complete! Panel sent to {self.panel_channel.mention}", ephemeral=True)
+            await interaction.followup.send(f"✅ Setup complete! Panel sent to {actual_panel_channel.mention}", ephemeral=True)
             self.stop()
         except Exception as e:
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
