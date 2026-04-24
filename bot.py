@@ -52,49 +52,66 @@ class SetupView(discord.ui.View):
         self.support_category = None
         self.staff_role = None
 
+    def update_embed(self):
+        embed = discord.Embed(
+            title="Ticket Bot Interactive Setup",
+            description="Please select the required channels and roles using the menus below.",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Panel Channel", value=self.panel_channel.mention if self.panel_channel else "Not selected", inline=True)
+        embed.add_field(name="Staff Role", value=self.staff_role.mention if self.staff_role else "Not selected", inline=True)
+        embed.add_field(name="Purchase Category", value=self.purchase_category.name if self.purchase_category else "Not selected", inline=False)
+        embed.add_field(name="Support Category", value=self.support_category.name if self.support_category else "Not selected", inline=False)
+        return embed
+
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Panel Channel", channel_types=[discord.ChannelType.text])
     async def select_panel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
         self.panel_channel = select.values[0]
-        await interaction.response.defer()
+        await interaction.response.edit_message(embed=self.update_embed(), view=self)
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Purchase Category", channel_types=[discord.ChannelType.category])
     async def select_purchase(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
         self.purchase_category = select.values[0]
-        await interaction.response.defer()
+        await interaction.response.edit_message(embed=self.update_embed(), view=self)
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Select Support Category", channel_types=[discord.ChannelType.category])
     async def select_support(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
         self.support_category = select.values[0]
-        await interaction.response.defer()
+        await interaction.response.edit_message(embed=self.update_embed(), view=self)
 
     @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Select Staff Role")
     async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
         self.staff_role = select.values[0]
-        await interaction.response.defer()
+        await interaction.response.edit_message(embed=self.update_embed(), view=self)
 
     @discord.ui.button(label="Confirm Setup", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not all([self.panel_channel, self.purchase_category, self.support_category, self.staff_role]):
-            return await interaction.response.send_message("Please complete all selections first!", ephemeral=True)
+            return await interaction.response.send_message("❌ Please complete all selections first!", ephemeral=True)
 
-        await database.update_settings(
-            interaction.guild_id,
-            panel_channel_id=self.panel_channel.id,
-            purchase_category_id=self.purchase_category.id,
-            support_category_id=self.support_category.id,
-            staff_role_id=self.staff_role.id
-        )
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            await database.update_settings(
+                interaction.guild_id,
+                panel_channel_id=self.panel_channel.id,
+                purchase_category_id=self.purchase_category.id,
+                support_category_id=self.support_category.id,
+                staff_role_id=self.staff_role.id
+            )
 
-        # Send panel
-        embed = discord.Embed(
-            title="Open a Ticket",
-            description="Click the buttons below to open a ticket for Purchase or Support.",
-            color=discord.Color.blue()
-        )
-        await self.panel_channel.send(embed=embed, view=TicketPanelView())
+            # Send panel
+            embed = discord.Embed(
+                title="Open a Ticket",
+                description="Click the buttons below to open a ticket for Purchase or Support.",
+                color=discord.Color.blue()
+            )
+            await self.panel_channel.send(embed=embed, view=TicketPanelView())
 
-        await interaction.response.send_message(f"✅ Setup complete! Panel sent to {self.panel_channel.mention}", ephemeral=True)
-        self.stop()
+            await interaction.followup.send(f"✅ Setup complete! Panel sent to {self.panel_channel.mention}", ephemeral=True)
+            self.stop()
+        except Exception as e:
+            await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
 class ProductSelectionView(discord.ui.View):
     def __init__(self, products):
